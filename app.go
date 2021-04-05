@@ -8,53 +8,32 @@ package main
 #include "stdlib.h"
 const QUIC_REGISTRATION_CONFIG RegConfig = { "quicsample", QUIC_EXECUTION_PROFILE_LOW_LATENCY };
 HQUIC Registration;
-HQUIC Listener = nullptr;
 const QUIC_API_TABLE* MsQuic;
 
-const QUIC_BUFFER Alpn = { sizeof("sample") - 1, (uint8_t*)"sample" };
-
-_IRQL_requires_max_(PASSIVE_LEVEL)
-_Function_class_(QUIC_LISTENER_CALLBACK)
-QUIC_STATUS
-QUIC_API
-ServerListenerCallback(
-    _In_ HQUIC,
-_In_opt_ void*,
-_Inout_ QUIC_LISTENER_EVENT* Event
-)
-{
-QUIC_STATUS Status = QUIC_STATUS_NOT_SUPPORTED;
-switch (Event->Type) {
-case QUIC_LISTENER_EVENT_NEW_CONNECTION:
-MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)ServerConnectionCallback, nullptr);
-Status = MsQuic->ConnectionSetConfiguration(Event->NEW_CONNECTION.Connection, Configuration);
-break;
-default:
-break;
-}
-return Status;
-}
-
-int call_msquic_reg_open(HQUIC* reg, QUIC_REGISTRATION_CONFIG* config) {
+static int call_msquic_reg_open(HQUIC* reg, QUIC_REGISTRATION_CONFIG* config) {
 	return MsQuic->RegistrationOpen(config, reg);
 }
 
-int call_msquic_listeneropen(HQUIC* reg) {
-	return MsQuic->ListenerOpen(reg, ServerListenerCallback, nullptr, &Listener)
+static int call_msquic_listeneropen(HQUIC reg, void* callback, HQUIC Listener) {
+	return MsQuic->ListenerOpen(reg, callback, ((void*)0), &Listener);
 }
 
-int call_msquic_listenerstart(QUIC_ADDR* addr) {
-	return MsQuic->ListenerStart(Listener, &Alpn, 1, &Address)
+static int call_msquic_listenerstart(QUIC_ADDR* addr, HQUIC Listener) {
+	const QUIC_BUFFER Alpn = { sizeof("sample") - 1, (uint8_t*)"sample" };
+	return MsQuic->ListenerStart(Listener, &Alpn, 1, &addr);
 }
 */
 import "C"
 import (
+	"fmt"
+	"github.com/mattn/go-pointer"
 	"log"
 	"unsafe"
 )
 
 const (
-	QuicAddressFamilyUnspec = 0
+	QuicAddressFamilyUnspec       = 0
+	QuicUdpPort             int16 = 4567
 )
 
 type Quic struct {
@@ -64,9 +43,22 @@ type Quic struct {
 	Address   *C.QUIC_ADDR
 }
 
+//export ServerListenerCallback
+func ServerListenerCallback(hquic *C.HQUIC, voidP unsafe.Pointer, listener *C.QUIC_LISTENER_EVENT) int {
+	fmt.Println("Call ServerListenerCallback")
+	return 0
+}
+
+//export ServerConnectionCallback
+func ServerConnectionCallback(hquic *C.HQUIC, voidP unsafe.Pointer, event *C.QUIC_CONNECTION_EVENT) int {
+	fmt.Println("Call ServerConnectionCallback")
+	return 0
+}
+
 func NewQuic() Quic {
 	quic := Quic{RegConfig: C.RegConfig, Config: &C.Registration}
-	C.QuicAddrSetFamily(&quic.Address, QuicAddressFamilyUnspec)
+	C.QuicAddrSetFamily(pointer.Save(&quic.Address), QuicAddressFamilyUnspec)
+	C.QuicAddrSetPort(pointer.Save(&quic.Address), QuicUdpPort)
 	quic.open()
 	quic.registration()
 	return quic
@@ -79,7 +71,7 @@ func main() {
 }
 
 func (m *Quic) open() {
-	status := C.MsQuicOpen(&m.APITable)
+	status := C.MsQuicOpen(pointer.Save(&m.APITable))
 	if status > 0 {
 		log.Fatalf("MsQuicOpen failed, status is: %v", status)
 	}
@@ -87,13 +79,19 @@ func (m *Quic) open() {
 
 func (m *Quic) registration() {
 	cs := C.CString("myquicsample")
-	C.call_msquic_reg_open(m.Config, &m.RegConfig)
+	C.call_msquic_reg_open(pointer.Save(m.Config), pointer.Save(&m.RegConfig))
 	C.free(unsafe.Pointer(cs))
 }
 
 func (m *Quic) runServer() {
-	C.call_msquic_listeneropen(&m.RegConfig)
-	C.call_msquic_listenerstart(m.Address)
+	status := C.call_msquic_listeneropen(pointer.Save(&m.RegConfig), ServerListenerCallback, nil)
+	if status > 0 {
+		log.Fatalf("MsQuic->ListenerOpen failed, status is: %v", status)
+	}
+	status = C.call_msquic_listenerstart(pointer.Save(m.Address), nil)
+	if status > 0 {
+		log.Fatalf("MsQuic->ListenerStart failed, status is: %v", status)
+	}
 }
 
 func (m *Quic) runClient() {
@@ -101,5 +99,5 @@ func (m *Quic) runClient() {
 }
 
 func (m *Quic) free() {
-	C.MsQuicClose(m.APITable)
+	C.MsQuicClose(pointer.Save(m.APITable))
 }
